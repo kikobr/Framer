@@ -7,6 +7,7 @@ Utils = require "./Utils"
 {BaseClass} = require "./BaseClass"
 {Animator} = require "./Animators/Animator"
 {LinearAnimator} = require "./Animators/LinearAnimator"
+{SVG} = require "./SVG"
 Curves = require "./Animators/Curves"
 
 numberRE = /[+-]?(?:\d*\.|)\d+(?:[eE][+-]?\d+|)/
@@ -213,6 +214,10 @@ class exports.Animation extends BaseClass
 	reverse: ->
 		# TODO: Add some tests
 		properties = _.clone(@_originalState)
+		for key, value of @properties
+			if SVG.isPath(value)
+				value.reversed = not value.reversed
+				properties[key] = value
 		options = _.clone(@options)
 		new Animation @layer, properties, options
 
@@ -260,6 +265,7 @@ class exports.Animation extends BaseClass
 	_start: =>
 		@_delayTimer = null
 		@emit(Events.AnimationStart)
+		@_previousValue = 0
 		Framer.Loop.on("update", @_update)
 
 	finish: =>
@@ -277,9 +283,22 @@ class exports.Animation extends BaseClass
 
 	_prepareUpdateValues: =>
 		@_valueUpdaters = {}
-
 		for k, v of @_stateB
-			if Color.isColorObject(v) or Color.isColorObject(@_stateA[k])
+			if SVG.isPath(v)
+				path = v
+				direction = null
+				start = null
+				end = null
+				switch k
+					when "x", "minX", "midX", "maxX", "width"
+						direction = "horizontal"
+					when "y", "minY", "midY", "maxY", "height"
+						direction = "vertical"
+					when "rotation", "rotationZ", "rotationX", "rotationY"
+						direction = "angle"
+
+				@_valueUpdaters[k] = path.valueUpdater(direction, @_target, @_target[k])
+			else if Color.isColorObject(v) or Color.isColorObject(@_stateA[k])
 				@_valueUpdaters[k] = @_updateColorValue
 			else if Gradient.isGradient(v) or Gradient.isGradient(@_stateA[k])
 				@_valueUpdaters[k] = @_updateGradientValue
@@ -297,7 +316,9 @@ class exports.Animation extends BaseClass
 				@_valueUpdaters[k] = @_updateNumberValue
 
 	_updateValues: (value) =>
-		@_valueUpdaters[k](k, value) for k, v of @_stateB
+		delta = value - @_previousValue
+		@_previousValue = value
+		@_valueUpdaters[k](k, value, delta) for k, v of @_stateB
 		return null
 
 	_updateNumberValue: (key, value) =>
@@ -363,10 +384,11 @@ class exports.Animation extends BaseClass
 			type = toShadow?.type ? fromShadow?.type ? Framer.Defaults.Shadow.type
 			fromShadow ?= _.defaults {color: null, type: type}, Framer.Defaults.Shadow
 			toShadow ?= _.defaults {color: null, type: type}, Framer.Defaults.Shadow
+			_.defaults fromShadow, Framer.Defaults.Shadow
+			_.defaults toShadow, Framer.Defaults.Shadow
 			result[index] = @_interpolateNumericObjectValues(["x", "y", "blur", "spread"], fromShadow, toShadow, value, false)
 			result[index].color = Color.mix(fromShadow.color, toShadow.color, value, false, @options.colorModel)
 			result[index].type = type
-
 		@_target[key] = result
 
 
@@ -400,7 +422,7 @@ class exports.Animation extends BaseClass
 		return _.pick(@layer, _.keys(@properties))
 
 	@isAnimatable = (v) ->
-		_.isNumber(v) or _.isFunction(v) or isRelativeProperty(v) or Color.isColorObject(v) or Gradient.isGradientObject(v)
+		_.isNumber(v) or _.isFunction(v) or isRelativeProperty(v) or Color.isColorObject(v) or Gradient.isGradientObject(v) or SVG.isPath(v)
 
 	# Special cases that animate with different types of objects
 	@isAnimatableKey = (k) ->
@@ -412,13 +434,20 @@ class exports.Animation extends BaseClass
 
 		# Only animate numeric properties for now
 		for k, v of properties
-			if k in ["frame", "size", "point"] # Derived properties
+			if k in ["frame", "size", "point", "midPoint", "path"] # Derived properties
 				switch k
 					when "frame" then derivedKeys = ["x", "y", "width", "height"]
 					when "size" then derivedKeys = ["width", "height"]
 					when "point" then derivedKeys = ["x", "y"]
+					when "midPoint" then derivedKeys = ["midX", "midY"]
+					when "path" then derivedKeys = ["x", "y", "rotation"]
 					else derivedKeys = []
-				if _.isObject(v)
+				if SVG.isPath(v)
+					if k is "path"
+						layer.midPoint = v.start
+					for derivedKey in derivedKeys
+						animatableProperties[derivedKey] = v
+				else if _.isObject(v)
 					_.defaults(animatableProperties, _.pick(v, derivedKeys))
 				else if _.isNumber(v)
 					for derivedKey in derivedKeys

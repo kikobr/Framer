@@ -107,28 +107,35 @@ class exports.LayerDraggable extends BaseClass
 		@attach()
 
 	attach: ->
-		@layer.on(Gestures.TapStart, @touchStart)
-		# @layer.on(Gestures.Pan, @_touchMove)
-		# @layer.on(Gestures.TapEnd, @_touchEnd)
-
-
-
+		@layer.on(Gestures.TapStart, @tapStart)
+		@layer.on(Gestures.PanStart, @panStart)
 		@layer.on("change:x", @_updateLayerPosition)
 		@layer.on("change:y", @_updateLayerPosition)
 
 	remove: ->
-		@layer.off(Gestures.TapStart, @touchStart)
-		@layer.off(Gestures.Pan, @_touchMove)
-		@layer.off(Gestures.PanEnd, @_touchEnd)
+		@layer.off(Gestures.TapStart, @tapStart)
+		@layer.off(Gestures.PanStart, @panStart)
+		@layer.off(Gestures.Pan, @_panMove)
+		@layer.off(Gestures.TapEnd, @_tapEnd)
 
 	updatePosition: (point) ->
 		# Override this to add your own behaviour to the update position
 		return point
 
+	panStart: (event) =>
+		# For backwards compatibility, we still call touchStart here
+		@touchStart(event)
+
 	touchStart: (event) =>
 		# We expose this publicly so you can start the dragging from an external event
 		# this is for example needed with the slider.
-		@_touchStart(event)
+		@_panStart(event)
+
+	# Stop the simulation if we touch the layer again
+	tapStart: (event) =>
+		if @_isAnimating
+			Framer.GestureInputRecognizer?.session?.cancelTap = true
+			@_panStart(event)
 
 	_updateLayerPosition: =>
 		# This updates the layer position if it's extrenally changed while
@@ -136,12 +143,14 @@ class exports.LayerDraggable extends BaseClass
 		return if @_ignoreUpdateLayerPosition is true
 		@_point = @layer.point
 
-	_touchStart: (event) =>
+	_panStart: (event) =>
+		return unless @enabled
 
 		LayerDraggable._globalDidDrag = false
 
-		Events.wrap(document).addEventListener(Gestures.Pan, @_touchMove)
-		Events.wrap(document).addEventListener(Gestures.TapEnd, @_touchEnd)
+		Events.wrap(document).addEventListener(Gestures.Pan, @_panMove)
+		# One would assume to use Gestures.PanEnd here, but we also want to animate back when we touched, but didn't pan
+		Events.wrap(document).addEventListener(Gestures.TapEnd, @_tapEnd)
 
 		# Only reset isMoving if this was not animating when we were clicking
 		# so we can use it to detect a click versus a drag.
@@ -193,7 +202,7 @@ class exports.LayerDraggable extends BaseClass
 
 		@emit(Events.DragSessionStart, event)
 
-	_touchMove: (event) =>
+	_panMove: (event) =>
 		return unless @enabled
 
 		# If we started dragging from another event we need to capture some initial values
@@ -201,16 +210,13 @@ class exports.LayerDraggable extends BaseClass
 
 		event.preventDefault()
 		event.stopPropagation() if @propagateEvents is false
-		# print event.touches[0].identifier, event.touches[1].identifier
+
 		touchEvent = Events.touchEvent(event)
-		point = {x: touchEvent.clientX, y: touchEvent.clientY}
-		touchEvent.point = Utils.convertPointFromContext(point, @layer, true)
-		touchEvent.contextPoint = Utils.convertPointFromContext(point, @layer.context, true)
 		@_lastEvent = touchEvent
 
 		@_eventBuffer.push
-			x: touchEvent.point.x
-			y: touchEvent.point.y
+			x: touchEvent.clientX
+			y: touchEvent.clientY
 			t: Date.now() # We don't use timeStamp because it's different on Chrome/Safari
 
 		point = _.clone(@_point)
@@ -266,12 +272,16 @@ class exports.LayerDraggable extends BaseClass
 
 		@emit(Events.DragSessionMove, event)
 
-	_touchEnd: (event) =>
+	_tapEnd: (event) =>
+		@_panEnd(event)
+
+	_panEnd: (event) =>
+		return unless @enabled
 
 		LayerDraggable._globalDidDrag = false
 
-		Events.wrap(document).removeEventListener(Gestures.Pan, @_touchMove)
-		Events.wrap(document).removeEventListener(Gestures.TapEnd, @_touchEnd)
+		Events.wrap(document).removeEventListener(Gestures.Pan, @_panMove)
+		Events.wrap(document).removeEventListener(Gestures.TapEnd, @_tapEnd)
 		event.stopPropagation()
 
 		event.stopPropagation() if @propagateEvents is false

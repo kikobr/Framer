@@ -20,6 +20,8 @@ Utils = require "./Utils"
 
 NoCacheDateKey = Date.now()
 
+delayedStyles = ["webkitTransform", "webkitFilter", "webkitPerspectiveOrigin", "webkitTransformOrigin", "webkitBackdropFilter"]
+
 layerValueTypeError = (name, value) ->
 	throw new Error("Layer.#{name}: value '#{value}' of type '#{typeof(value)}' is not valid")
 
@@ -52,14 +54,18 @@ layerProperty = (obj, name, cssProperty, fallback, validator, transformer, optio
 
 			@_properties[name] = value
 
-			mainElement = @_element if includeMainElement or not targetElement
-			subElement = @[targetElement] if targetElement?
 			if cssProperty isnt null
+				elementContainer = @
+				if cssProperty in @_stylesAppliedToParent
+					elementContainer = @_parent
+					@_parent._properties[name] = fallback
+				mainElement = elementContainer._element if includeMainElement or not targetElement
+				subElement = elementContainer[targetElement] if targetElement?
 				if name is cssProperty and not LayerStyle[cssProperty]?
 					mainElement?.style[cssProperty] = @_properties[name]
 					subElement?.style[cssProperty] = @_properties[name]
 				# These values are set multiple times during applyDefaults, so ignore them here, and set the style in the constructor
-				else if not @__applyingDefaults or (cssProperty not in ["webkitTransform", "webkitFilter", "webkitPerspectiveOrigin", "webkitTransformOrigin", "webkitBackdropFilter"])
+				else if not @__applyingDefaults or (cssProperty not in delayedStyles)
 					style = LayerStyle[cssProperty](@)
 					mainElement?.style[cssProperty] = style
 					subElement?.style[cssProperty] = style
@@ -159,6 +165,8 @@ class exports.Layer extends BaseClass
 		@_style = {}
 		@_children = []
 
+		@_stylesAppliedToParent ?= []
+
 		# Special power setting for 2d rendering path. Only enable this
 		# if you know what you are doing. See LayerStyle for more info.
 		@_prefer2d = false
@@ -174,19 +182,11 @@ class exports.Layer extends BaseClass
 			@_createHTMLElementIfNeeded()
 
 		# Create border element
-		@_elementBorder = document.createElement("div")
-		@_elementBorder.style.position = "absolute"
-		@_elementBorder.style.top = "0"
-		@_elementBorder.style.bottom = "0"
-		@_elementBorder.style.left = "0"
-		@_elementBorder.style.right = "0"
-		@_elementBorder.style.boxSizing = "border-box"
-		@_elementBorder.style.zIndex = "1000"
-		@_elementBorder.style.pointerEvents = "none"
-		@_element.appendChild(@_elementBorder)
+		@_createBorderElement()
 
 		# Sanitize calculated property setters so direct properties always win
 		layerPropertyIgnore(options, "point", ["x", "y"])
+		layerPropertyIgnore(options, "midPoint", ["midX", "midY"])
 		layerPropertyIgnore(options, "size", ["width", "height"])
 		layerPropertyIgnore(options, "frame", ["x", "y", "width", "height"])
 
@@ -198,11 +198,12 @@ class exports.Layer extends BaseClass
 		@__applyingDefaults = true
 		super Defaults.getDefaults("Layer", options)
 		delete @__applyingDefaults
-		@_element.style["webkitTransform"] = LayerStyle["webkitTransform"](@)
-		@_element.style["webkitFilter"] = LayerStyle["webkitFilter"](@)
-		@_element.style["webkitTransformOrigin"] = LayerStyle["webkitTransformOrigin"](@)
-		@_element.style["webkitPerspectiveOrigin"] = LayerStyle["webkitPerspectiveOrigin"](@)
-		@_element.style["webkitBackdropFilter"] = LayerStyle["webkitBackdropFilter"](@)
+
+		for cssProperty in delayedStyles
+			element = @_element
+			if cssProperty in @_stylesAppliedToParent
+				element = @_parent._element
+			element.style[cssProperty] = LayerStyle[cssProperty](@)
 
 		# Add this layer to the current context
 		@_context.addLayer(@)
@@ -234,6 +235,8 @@ class exports.Layer extends BaseClass
 		@updateShadowStyle()
 
 		@onChange("size", @updateForSizeChange)
+
+	@ExistingIdMessage: (type, id) -> "Can not set #{type}: There's already an element with id '#{id}' in this document'"
 
 	##############################################################
 	# Properties
@@ -275,7 +278,7 @@ class exports.Layer extends BaseClass
 	)
 
 	@define "visible", layerProperty(@, "visible", "display", true, _.isBoolean)
-	@define "opacity", layerProperty(@, "opacity", "opacity", 1, _.isNumber)
+	@define "opacity", layerProperty(@, "opacity", "opacity", 1, _.isNumber, parseFloat)
 	@define "index", layerProperty(@, "index", "zIndex", 0, _.isNumber, null, {importable: false, exportable: false})
 	@define "clip", layerProperty(@, "clip", "overflow", false, _.isBoolean, null, {}, null, "_elementHTML", true)
 
@@ -352,6 +355,8 @@ class exports.Layer extends BaseClass
 	@define "backgroundGrayscale", layerProperty(@, "backgroundGrayscale", "webkitBackdropFilter", 0, _.isNumber)
 	@define "backgroundSepia", layerProperty(@, "backgroundSepia", "webkitBackdropFilter", 0, _.isNumber)
 
+	@define "backgroundSize", layerProperty(@, "backgroundSize", "backgroundSize", "fill", _.isString)
+
 	for i in [0..8]
 		do (i) =>
 			@define "shadow#{i+1}",
@@ -378,7 +383,6 @@ class exports.Layer extends BaseClass
 	for shadowProp in ["X", "Y", "Blur", "Spread", "Color", "Type"]
 		do (shadowProp) =>
 			@define "shadow#{shadowProp}",
-				exportable: false
 				get: ->
 					return null if not @shadows? or @shadows.length is 0
 					@shadows[0][shadowProp.toLowerCase()]
@@ -503,14 +507,16 @@ class exports.Layer extends BaseClass
 		# If this is a number, we set everything to that number
 		if _.isNumber(input)
 			for k in keys
-				@[k] = input
+				if @[k] isnt input
+					@[k] = input
 		else
 			# If there is nothing to work with we exit
 			return unless input
 
 			# Set every numeric value for eacht key
 			for k in keys
-				@[k] = input[k] if _.isNumber(input[k])
+				if _.isNumber(input[k]) and @[k] isnt input[k]
+					@[k] = input[k]
 
 	@define "point",
 		importable: true
@@ -520,6 +526,25 @@ class exports.Layer extends BaseClass
 		set: (input) ->
 			input = layerPropertyPointTransformer(input, @, "point")
 			@_setGeometryValues(input, ["x", "y"])
+
+	@define "midPoint",
+		importable: true
+		exportable: false
+		depends: ["width", "height", "size", "parent", "point"]
+		get: ->
+			x: @midX
+			y: @midY
+		set: (input) ->
+			input = layerPropertyPointTransformer(input, @, "midPoint")
+			if not _.isNumber input
+				input = _.pick(input, ["x", "y", "midX", "midY"])
+				if input.x? and not input.midX?
+					input.midX = input.x
+					delete input.x
+				if input.y? and not input.midY?
+					input.midY = input.y
+					delete input.y
+			@_setGeometryValues(input, ["midX", "midY"])
 
 	@define "size",
 		importable: true
@@ -661,8 +686,8 @@ class exports.Layer extends BaseClass
 	convertPointToCanvas: (point) =>
 		return Utils.convertPointToContext(point, @, true)
 
-	convertPointToLayer: (point, layer) =>
-		return Utils.convertPoint(point, @, layer, true)
+	convertPointToLayer: (point, layer, rootContext=true) =>
+		return Utils.convertPoint(point, @, layer, rootContext)
 
 	@define "canvasFrame",
 		importable: true
@@ -681,8 +706,8 @@ class exports.Layer extends BaseClass
 			@frame = Utils.convertFrameFromContext(frame, @, false, false)
 
 	contentFrame: ->
-		return {x: 0, y: 0, width: 0, height: 0} unless @children.length
-		return Utils.frameMerge(_.map(@children, "frame"))
+		return {x: 0, y: 0, width: 0, height: 0} unless @_children.length
+		return Utils.frameMerge(_.map(@_children, "frame"))
 
 	totalFrame: ->
 		return Utils.frameMerge(@frame, @contentFrame())
@@ -865,9 +890,27 @@ class exports.Layer extends BaseClass
 		@_element = document.createElement "div"
 		@_element.classList.add("framerLayer")
 
+	_createBorderElement: ->
+		return if @_elementBorder?
+		@_elementBorder = document.createElement "div"
+		@_elementBorder.style.position = "absolute"
+		@_elementBorder.style.top = "0"
+		@_elementBorder.style.bottom = "0"
+		@_elementBorder.style.left = "0"
+		@_elementBorder.style.right = "0"
+		@_elementBorder.style.boxSizing = "border-box"
+		@_elementBorder.style.zIndex = "1000"
+		@_elementBorder.style.pointerEvents = "none"
+		@_element.appendChild(@_elementBorder)
+
 	_insertElement: ->
 		@bringToFront()
 		@_context.element.appendChild(@_element)
+
+	# This method is called as soon as the @_element is part of the DOM
+	# If layers are initialized before the DOM is complete,
+	# the contexts calls this methods on all Layers as soon as it appends itself to the document
+	elementInsertedIntoDocument: ->
 
 	_createHTMLElementIfNeeded: ->
 		if not @_elementHTML
@@ -885,6 +928,12 @@ class exports.Layer extends BaseClass
 			# a child node to insert it in, so it won't mess with Framers
 			# layer hierarchy.
 			@_createHTMLElementIfNeeded()
+			ids = Utils.getIdAttributesFromString(value)
+			for id in ids
+				existingElement = document.querySelector("[id='#{id}']")
+				if existingElement?
+					Utils.throwInStudioOrWarnInProduction(Layer.ExistingIdMessage("html", id))
+					return
 
 			@_elementHTML.innerHTML = value
 			@_updateHTMLScale()
@@ -937,6 +986,7 @@ class exports.Layer extends BaseClass
 
 		@_context.removeLayer(@)
 		@_context.emit("layer:destroy", @)
+		@_context.domEventManager.remove(@_element)
 
 
 	##############################################################
@@ -946,9 +996,9 @@ class exports.Layer extends BaseClass
 
 		layer = @copySingle()
 
-		for child in @children
+		for child in @_children
 			copiedChild = child.copy()
-			copiedChild.parent = layer
+			copiedChild.parent = layer if copiedChild isnt null
 
 		return layer
 
@@ -1104,7 +1154,11 @@ class exports.Layer extends BaseClass
 		enumerable: false
 		exportable: false
 		importable: false
-		get: -> _.clone @_children
+		get: -> @_children.map (c) ->
+			if c instanceof SVGLayer and c.children.length is 1 and _.startsWith(c.name, '.')
+				return c.children[0]
+			else
+				return c
 
 	@define "siblings",
 		enumerable: false
@@ -1139,7 +1193,7 @@ class exports.Layer extends BaseClass
 
 	removeChild: (layer) ->
 
-		if layer not in @children
+		if layer not in @_children
 			return
 
 		layer.parent = null
@@ -1299,7 +1353,7 @@ class exports.Layer extends BaseClass
 
 	bringToFront: ->
 		maxIndex = null
-		siblings = @parent?.children ? @context._layers
+		siblings = @parent?._children ? @context._layers
 		return if siblings.count <= 1
 		for layer in siblings
 			continue if layer is @
@@ -1311,7 +1365,7 @@ class exports.Layer extends BaseClass
 
 	sendToBack: ->
 		minIndex = null
-		siblings = @parent?.children ? @context._layers
+		siblings = @parent?._children ? @context._layers
 		return if siblings.count <= 1
 		for layer in siblings
 			continue if layer is @
@@ -1508,6 +1562,8 @@ class exports.Layer extends BaseClass
 	onMouseDown: (cb) -> @on(Events.MouseDown, cb)
 	onMouseOver: (cb) -> @on(Events.MouseOver, cb)
 	onMouseOut: (cb) -> @on(Events.MouseOut, cb)
+	onMouseEnter: (cb) -> @on(Events.MouseEnter, cb)
+	onMouseLeave: (cb) -> @on(Events.MouseLeave, cb)
 	onMouseMove: (cb) -> @on(Events.MouseMove, cb)
 	onMouseWheel: (cb) -> @on(Events.MouseWheel, cb)
 

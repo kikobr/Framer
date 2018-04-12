@@ -50,7 +50,7 @@ describe "Layer", ->
 			# if the default background color is not set the content layer of scrollcomponent is not hidden when layers are added
 			layer = new Layer()
 
-			Color.equal(layer.backgroundColor, Framer.Defaults.Layer.backgroundColor).should.be.true
+			layer.backgroundColor.should.equalColor Framer.Defaults.Layer.backgroundColor
 
 			Framer.Defaults =
 				Layer:
@@ -371,12 +371,43 @@ describe "Layer", ->
 
 			layer = new Layer backgroundColor: "red"
 			layer.image = imagePath
-			Color.equal(layer.backgroundColor, new Color("red")).should.be.true
+			layer.backgroundColor.should.equalColor "red"
 
 			layer = new Layer
 			layer.backgroundColor = "red"
 			layer.image = imagePath
-			Color.equal(layer.backgroundColor, new Color("red")).should.be.true
+			layer.backgroundColor.should.equalColor "red"
+
+		describe "should set the background size", ->
+			it "cover", ->
+				layer = new Layer backgroundSize: "cover"
+				layer.style["background-size"].should.equal "cover"
+
+			it "contain", ->
+				layer = new Layer backgroundSize: "contain"
+				layer.style["background-size"].should.equal "contain"
+
+			it "percentage", ->
+				layer = new Layer backgroundSize: "100%"
+				layer.style["background-size"].should.equal "100%"
+
+			it "other", ->
+				layer = new Layer backgroundSize: "300px, 5em 10%"
+				layer.style["background-size"].should.equal "300px, 5em 10%"
+
+			it "fill", ->
+				layer = new Layer backgroundSize: "fill"
+				layer.style["background-size"].should.equal "cover"
+
+			it "fit", ->
+				layer = new Layer backgroundSize: "fit"
+				layer.style["background-size"].should.equal "contain"
+
+			it "stretch", ->
+				layer = new Layer backgroundSize: "stretch"
+				# This should be "100% 100%", but phantomjs doest return that when you set it
+				layer.style["background-size"].should.equal "100%"
+
 
 		it "should set visible", ->
 
@@ -867,7 +898,9 @@ describe "Layer", ->
 			a = l.animate
 				shadow1:
 					blur: 100
-			Utils.delay a.time /2, ->
+			Utils.delay a.time / 2, ->
+				l.shadow1.color.a.should.be.above 0
+				l.shadow1.color.a.should.be.below 0.5
 				l.shadow1.blur.should.be.above 10
 				l.shadow1.blur.should.be.below 90
 			l.onAnimationEnd ->
@@ -911,7 +944,7 @@ describe "Layer", ->
 			l.shadows = []
 			l.shadowColor = "yellow"
 			l.shadows.length.should.equal 1
-			Color.equal(l.shadows[0].color, "yellow").should.be.true
+			l.shadows[0].color.should.equalColor "yellow"
 
 		it "should copy shadows if you copy a layer", ->
 			l = new Layer
@@ -1010,7 +1043,7 @@ describe "Layer", ->
 
 			layer.shadowX.should.equal 5
 			layer.shadowY.should.equal 20
-			Color.equal(layer.shadowColor, "blue").should.be.true
+			layer.shadowColor.should.equalColor "blue"
 			layer.shadowBlur.should.equal 10
 			layer.shadowType.should.equal "box"
 
@@ -1117,6 +1150,21 @@ describe "Layer", ->
 
 			layerC.superLayer = null
 			assert.deepEqual layerA.children, []
+
+		it "should ignore a hidden SVGLayer", ->
+			layerA = new Layer
+			layerB = new Layer
+				parent: layerA
+			svgLayer = new SVGLayer
+				parent: layerA
+				name: ".SVGLayer"
+				svg: '<svg xmlns="http://www.w3.org/2000/svg" width="62" height="62"><path d="M 31 0 C 48.121 0 62 13.879 62 31 C 62 48.121 48.121 62 31 62 C 13.879 62 0 48.121 0 31 C 0 13.879 13.879 0 31 0 Z" name="Oval"></path></svg>'
+			svgLayer2 = new SVGLayer
+				parent: layerA
+				name: ".SVGLayer",
+				svg: '<svg xmlns="http://www.w3.org/2000/svg" width="62" height="62"><path d="M 31 0 L 40.111 18.46 L 60.483 21.42 L 45.741 35.79 L 49.221 56.08 L 31 46.5 L 12.779 56.08 L 16.259 35.79 L 1.517 21.42 L 21.889 18.46 Z" name="Star"></path></svg>'
+			layerA.children.length.should.equal 3
+			layerA.children.should.eql [layerB, svgLayer.children[0], svgLayer2.children[0]]
 
 		it "should list sibling root layers", ->
 
@@ -1542,6 +1590,46 @@ describe "Layer", ->
 				layerA.x.should.equal 137
 				layerA.y.should.equal 283
 
+	describe "midPoint", ->
+		it "should accept a midX/midY value", ->
+			l = new Layer
+				midPoint:
+					midX: 123
+					midY: 459
+			l.midX.should.equal 123
+			l.midY.should.equal 459
+		it "should accept a x/y value", ->
+			l = new Layer
+				midPoint:
+					x: 123
+					y: 459
+			l.midX.should.equal 123
+			l.midY.should.equal 459
+
+		it "should accept a single number", ->
+			l = new Layer
+				midPoint: 234
+			l.midX.should.equal 234
+			l.midY.should.equal 234
+		it "should pick midX/midY over x/y", ->
+			l = new Layer
+				midPoint:
+					midX: 123
+					midY: 459
+					x: 653
+					y: 97
+			l.midX.should.equal 123
+			l.midY.should.equal 459
+		it "should not change the object passed in", ->
+			l =
+				x: 100
+				y: 200
+			m = new Layer
+				midPoint: l
+			m.midX.should.equal l.x
+			m.midY.should.equal l.y
+			l.x.should.equal 100
+			l.y.should.equal 200
 	describe "CSS", ->
 
 		it "classList should work", ->
@@ -1556,11 +1644,15 @@ describe "Layer", ->
 
 		it "should destroy", ->
 
+			before = Object.keys(Framer.CurrentContext.domEventManager._elements).length
+
 			layer = new Layer
 			layer.destroy()
 
 			(layer in Framer.CurrentContext.layers).should.be.false
 			assert.equal layer._element.parentNode, null
+
+			assert.equal before, Object.keys(Framer.CurrentContext.domEventManager._elements).length
 
 		it "should set text", ->
 

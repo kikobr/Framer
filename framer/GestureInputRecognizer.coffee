@@ -40,7 +40,6 @@ class exports.GestureInputRecognizer
 		@touchstart(event)
 
 	touchstart: (event) =>
-
 		# Only fire if we are not already in a session
 		return if @session
 
@@ -55,6 +54,7 @@ class exports.GestureInputRecognizer
 			started: {}
 			events: []
 			eventCount: 0
+			cancelTap: false
 
 		event = @_getGestureEvent(event)
 
@@ -72,7 +72,6 @@ class exports.GestureInputRecognizer
 		@_process(@_getGestureEvent(event))
 
 	touchend: (event) =>
-
 		# Only fire if there are no fingers left on the screen
 
 		if event.touches?
@@ -90,14 +89,10 @@ class exports.GestureInputRecognizer
 		event = @_getGestureEvent(event)
 
 		for eventName, value of @session.started
-			@["#{eventName}end"](event) if value
+			if value
+				@["#{eventName}end"](event)
 
-		# We only want to fire a tap event if the original target is the same
-		# as the release target, so buttons work the way you expect if you
-		# release the mouse outside.
-		if not @session?.startEvent
-			@tap(event)
-		else if @session.startEvent.target is event.target
+		if @shouldFireTapEvent(event)
 			@tap(event)
 
 		@tapend(event)
@@ -108,6 +103,19 @@ class exports.GestureInputRecognizer
 		@touchend(@session.lastEvent)
 
 	# Tap
+
+	shouldFireTapEvent: (event) ->
+		startEvent = @session?.startEvent
+		if startEvent?
+			# We only want to fire a tap event if the original target is the same
+			# as the release target, so buttons work the way you expect if you
+			# release the mouse outside.
+			isSameTarget = startEvent.target is event.target
+			isShortSession = event.time - @session.startTime  < 750
+			isShortDistance = Utils.pointDistance(startEvent.touchCenter, event.touchCenter) < 45
+			return isSameTarget and isShortSession and isShortDistance and not @session.cancelTap
+		else
+			return true
 
 	tap: (event) => @_dispatchEvent("tap", event)
 	tapstart: (event) => @_dispatchEvent("tapstart", event)
@@ -326,14 +334,13 @@ class exports.GestureInputRecognizer
 
 	_getEventPoint: (event) ->
 		return @_getTouchPoint(event, 0) if event.touches?.length
-		point = {x: event.pageX, y: event.pageY}
-		Utils.convertPointFromContext(point, Framer.CurrentContext, true, true)
+		return {x: event.pageX, y: event.pageY}
 
 	_getGestureEvent: (event) ->
 
 		# Convert the point to the current context
-		eventPoint = @_getEventPoint(event)
-
+		eventPoint = Utils.convertPointFromContext(
+			@_getEventPoint(event), Framer.CurrentContext, true, true)
 		_.extend event,
 			time: Date.now() # Current time √
 
@@ -430,11 +437,9 @@ class exports.GestureInputRecognizer
 		return event
 
 	_getTouchPoint: (event, index) ->
-		point =
+		return point =
 			x: event.touches[index].pageX
 			y: event.touches[index].pageY
-		return Utils.convertPointFromContext(point, Framer.CurrentContext, true, true)
-
 
 	_getDirection: (offset) ->
 		if Math.abs(offset.x) > Math.abs(offset.y)
